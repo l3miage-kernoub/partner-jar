@@ -45,7 +45,7 @@ Dans le `pom.xml` de la boutique :
 <dependency>
     <groupId>com.github.COMPTE_GITHUB</groupId>
     <artifactId>partner-jar</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.1</version>
 </dependency>
 ```
 
@@ -81,14 +81,14 @@ Les équipes qui ne sont pas en Java utilisent directement le yaml.
 
 ## Publier une nouvelle version
 
-1. Modifier `contrat-partenaires.yaml` (et `info.version`), après accord des équipes.
-2. Mettre la même version dans `<version>` du `pom.xml`.
-3. Vérifier le build : `mvn package`.
+1. Modifier `contrat-partenaires.yaml` (et `info.version` si le contrat change), après accord des équipes.
+2. Mettre la version du futur tag dans `<version>` du `pom.xml`.
+3. Vérifier le build : `./mvnw package`.
 4. Pousser, puis créer le tag :
 
    ```
-   git tag 1.0.1
-   git push origin 1.0.1
+   git tag 1.0.2
+   git push origin 1.0.2
    ```
 
 5. Sur [jitpack.io](https://jitpack.io), chercher le dépôt et cliquer sur *Get it* pour lancer le build de la version.
