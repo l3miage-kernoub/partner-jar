@@ -1,0 +1,349 @@
+openapi: 3.0.3
+info:
+  title: Contrat partenaires MarketHub
+  version: 1.0.0
+  description: |
+    Contrat commun entre les boutiques partenaires de l'itération 3.
+    Chaque boutique expose ces routes sous `/api/partner` et appelle celles des autres.
+    Chaque boutique garde son propre modèle et traduit vers ce format.
+
+    Règles communes :
+    - Tous les identifiants sont des chaînes sans format imposé (ex. "42" ou un UUID).
+    - Les prix sont en euros, sans taxe, avec deux décimales.
+    - Le vendeur d'origine (la boutique qui reçoit la commande) prépare la commande et l'expédie directement au client.
+    - La boutique où le client achète facture les frais de livraison et les options ; le partenaire exécute les options sans les facturer.
+    - Le client n'est pas partagé : seule l'adresse de livraison est transmise.
+    - Toute erreur, y compris 500, renvoie { "message": "..." }. En cas d'erreur, rien n'est réservé.
+    - Tout pays de livraison est accepté.
+
+    Hors du contrat :
+    - pas d'annulation partielle : on annule toute la commande, pas une ligne ;
+    - pas de modification d'une commande déjà passée ;
+    - pas d'authentification : l'API est ouverte, accepté pour le projet ;
+    - pas de règlement entre boutiques (paiement du partenaire, retours, remboursements) ;
+    - les statuts changent uniquement chez le vendeur : l'appelant les lit avec GET /orders/{id}, il n'y a pas de notification.
+
+    Comportement de l'appelant (délai d'attente de 3 secondes par appel) :
+    - GET /products en erreur ou sans réponse : afficher son catalogue sans les produits de ce partenaire.
+    - POST /orders sans réponse : renvoyer le même POST avec la même reference ; si ça échoue encore, annuler sa propre commande et ne pas facturer le client.
+    - POST /orders/{id}/cancel sans réponse : réessayer ; un 409 car déjà annulée confirme l'annulation.
+    - Erreur 500 : considérer le partenaire comme indisponible.
+servers:
+  - url: http://{host}:{port}/api/partner
+    variables:
+      host:
+        default: localhost
+        description: Adresse de la VM de la boutique partenaire
+      port:
+        default: '80'
+tags:
+  - name: Produits
+  - name: Commandes
+paths:
+  /products:
+    get:
+      tags: [Produits]
+      operationId: getProducts
+      summary: Lister tous les produits en vente
+      responses:
+        '200':
+          description: Tous les produits en vente
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Product'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /orders:
+    post:
+      tags: [Commandes]
+      operationId: createOrder
+      summary: Commander chez le partenaire
+      description: |
+        Le stock est réservé immédiatement et la commande est validée.
+        Si la `reference` a déjà été reçue avec un contenu identique, la commande existante est renvoyée (200) : rien n'est recréé ni réservé une seconde fois.
+        Avec un contenu différent, la réponse est 409.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderRequest'
+      responses:
+        '201':
+          description: Commande créée, stock réservé
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '200':
+          description: Référence déjà reçue avec un contenu identique, la commande existante est renvoyée telle quelle
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '400':
+          description: |
+            Requête invalide, rien n'est réservé :
+            JSON mal formé ; champ obligatoire absent ou vide (reference, lines, delivery et ses champs) ;
+            lines vide ; quantity inférieure ou égale à 0 ;
+            même productId présent deux fois dans lines avec le même giftWrap ;
+            code promo inconnu, inactif ou épuisé
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Produit inconnu
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: |
+            Rien n'est réservé : stock insuffisant ; produit indisponible (il existe mais n'est plus en vente) ;
+            reference déjà utilisée pour une autre commande (contenu différent)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /orders/{id}:
+    get:
+      tags: [Commandes]
+      operationId: getOrder
+      summary: Suivre une commande
+      parameters:
+        - $ref: '#/components/parameters/OrderId'
+      responses:
+        '200':
+          description: La commande
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '404':
+          description: Commande inconnue
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /orders/{id}/cancel:
+    post:
+      tags: [Commandes]
+      operationId: cancelOrder
+      summary: Annuler une commande
+      description: Le stock est remis en vente. Possible tant que la commande n'est pas expédiée.
+      parameters:
+        - $ref: '#/components/parameters/OrderId'
+      responses:
+        '200':
+          description: La commande, au statut CANCELLED
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '404':
+          description: Commande inconnue
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Commande déjà expédiée, livrée ou annulée
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+components:
+  responses:
+    InternalError:
+      description: Erreur interne ; l'appelant considère le partenaire comme indisponible
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  parameters:
+    OrderId:
+      name: id
+      in: path
+      required: true
+      description: Identifiant de la commande chez le partenaire
+      schema:
+        type: string
+      example: 5f0e7a52-93c1-4f64-8a55-0c1e6f2b7d90
+  schemas:
+    Error:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+          description: Message lisible
+          example: Stock insuffisant pour le produit Clavier mécanique.
+    Currency:
+      type: string
+      enum: [EUR]
+    OrderStatus:
+      type: string
+      enum: [VALIDATED, IN_PREPARATION, SHIPPED, DELIVERED, CANCELLED]
+    Product:
+      type: object
+      required: [id, name, price, currency, availableQuantity]
+      properties:
+        id:
+          type: string
+          example: 0b7c1c9e-5a0e-4c1b-9d53-2f6a1c0e8a11
+        name:
+          type: string
+          example: Clavier mécanique
+        description:
+          type: string
+          nullable: true
+          example: Clavier filaire AZERTY
+        category:
+          type: string
+          nullable: true
+          example: Informatique
+        price:
+          type: number
+          format: double
+          minimum: 0
+          description: Prix unitaire en euros, sans taxe
+          example: 79.90
+        currency:
+          $ref: '#/components/schemas/Currency'
+        availableQuantity:
+          type: integer
+          minimum: 0
+          description: Quantité disponible à la commande
+          example: 29
+        imageUrl:
+          type: string
+          nullable: true
+          description: URL complète (http://...), joignable depuis le navigateur du client de la boutique qui affiche le produit
+          example: http://localhost/images/clavier.jpg
+    OrderRequest:
+      type: object
+      required: [reference, lines, delivery]
+      properties:
+        reference:
+          type: string
+          description: |
+            Référence de la commande chez la boutique qui commande : son préfixe unique (LAB, LOGID, celui du troisième groupe),
+            un tiret, puis son numéro de commande. Elle est donc unique.
+          example: LAB-128
+        promoCode:
+          type: string
+          nullable: true
+          description: Code promo du partenaire, appliqué par lui
+          example: CODE-DU-PARTENAIRE
+        lines:
+          type: array
+          minItems: 1
+          description: Deux lignes peuvent porter le même productId seulement si leur giftWrap est différent
+          items:
+            $ref: '#/components/schemas/OrderLineRequest'
+        delivery:
+          $ref: '#/components/schemas/Delivery'
+        options:
+          $ref: '#/components/schemas/Options'
+    OrderLineRequest:
+      type: object
+      required: [productId, quantity]
+      properties:
+        productId:
+          type: string
+          example: 0b7c1c9e-5a0e-4c1b-9d53-2f6a1c0e8a11
+        quantity:
+          type: integer
+          minimum: 1
+          example: 2
+        giftWrap:
+          type: boolean
+          default: false
+          description: Emballage cadeau de cette ligne, exécuté par le partenaire sans être facturé
+    Delivery:
+      type: object
+      required: [recipientName, address, postalCode, city, country]
+      properties:
+        recipientName:
+          type: string
+          example: Jean Dupont
+        address:
+          type: string
+          example: 5 avenue Alsace-Lorraine
+        postalCode:
+          type: string
+          example: '38000'
+        city:
+          type: string
+          example: Grenoble
+        country:
+          type: string
+          example: France
+    Options:
+      type: object
+      description: Options de toute la commande, exécutées par le partenaire sans être facturées
+      properties:
+        express:
+          type: boolean
+          default: false
+          description: Livraison express prioritaire
+    Order:
+      type: object
+      required: [id, reference, status, lines, discount, total, currency]
+      properties:
+        id:
+          type: string
+          example: 5f0e7a52-93c1-4f64-8a55-0c1e6f2b7d90
+        reference:
+          type: string
+          example: LAB-128
+        status:
+          $ref: '#/components/schemas/OrderStatus'
+        lines:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderLine'
+        discount:
+          type: number
+          format: double
+          minimum: 0
+          description: Remise du code promo du partenaire
+          example: 0
+        total:
+          type: number
+          format: double
+          minimum: 0
+          description: Produits moins discount, sans frais de livraison ni options ; fait foi
+          example: 159.80
+        currency:
+          $ref: '#/components/schemas/Currency'
+    OrderLine:
+      type: object
+      required: [productId, quantity, unitPrice, giftWrap]
+      properties:
+        productId:
+          type: string
+          example: 0b7c1c9e-5a0e-4c1b-9d53-2f6a1c0e8a11
+        quantity:
+          type: integer
+          minimum: 1
+          example: 2
+        unitPrice:
+          type: number
+          format: double
+          minimum: 0
+          description: Prix unitaire appliqué ; fait foi s'il a changé depuis GET /products
+          example: 79.90
+        giftWrap:
+          type: boolean
+          example: true
